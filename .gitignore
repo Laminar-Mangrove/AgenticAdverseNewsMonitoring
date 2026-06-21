@@ -1,0 +1,18 @@
+# Environment
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OpenSanctions bulk data (download via scripts/download_opensanctions.py)
+data/opensanctions/*.csv
+
+# OS
+.DS_Store
