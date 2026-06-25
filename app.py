@@ -1,17 +1,38 @@
 """
 Adverse News Classifier - Streamlit Dashboard
-Agentic AML screening with Stripe payment gateway.
+Agentic AML screening with email login, CAPTCHA, and Stripe payments.
 """
+import os
+
 import streamlit as st
 
+# Load Streamlit Cloud secrets before other app modules read config.
+try:
+    for key, value in st.secrets.items():
+        if isinstance(value, str) and not os.getenv(key):
+            os.environ[key] = value
+except Exception:
+    pass
+
+from components.turnstile import turnstile_widget
 from src.agent import run_adverse_news_screening, AdverseNewsReport
+from src.captcha import captcha_passed, new_math_challenge
+from src.config import TURNSTILE_SITE_KEY, is_turnstile_configured
 from src.stripe_payments import (
     create_checkout_session,
-    get_publishable_key,
+    get_paid_session_details,
     is_stripe_configured,
-    get_credits_from_session,
     CREDIT_PACKS,
-    FREE_CREDITS,
+)
+from src.user_store import (
+    AuthUser,
+    deduct_credit,
+    get_credits,
+    is_auth_configured,
+    record_stripe_session,
+    refund_credit,
+    sign_in,
+    sign_up,
 )
 
 # Page config
@@ -86,70 +107,199 @@ st.markdown("""
 
 
 def init_session_state():
-    """Initialize session state."""
+    if "user" not in st.session_state:
+        st.session_state.user = None
     if "credits" not in st.session_state:
-        st.session_state.credits = FREE_CREDITS
+        st.session_state.credits = 0
     if "report" not in st.session_state:
         st.session_state.report = None
     if "processing" not in st.session_state:
         st.session_state.processing = False
+    if "math_question" not in st.session_state:
+        question, answer = new_math_challenge()
+        st.session_state.math_question = question
+        st.session_state.math_answer = answer
 
 
-def handle_stripe_callback():
-    """Handle Stripe success redirect."""
+def refresh_user_credits(user: AuthUser) -> None:
+    st.session_state.credits = get_credits(user.id)
+
+
+def handle_stripe_callback(user: AuthUser) -> None:
     session_id = st.query_params.get("session_id")
-    if session_id and is_stripe_configured():
-        credits = get_credits_from_session(session_id)
-        if credits:
-            st.session_state.credits += credits
-            st.query_params.clear()
-            st.success(f"✅ Payment successful! {credits} credits added.")
+    if not session_id or not is_stripe_configured():
+        return
+
+    details = get_paid_session_details(session_id)
+    if not details:
+        return
+
+    if details["user_id"] != user.id:
+        st.error("Payment session does not match the signed-in account.")
+        st.query_params.clear()
+        return
+
+    if record_stripe_session(session_id, user.id, details["credits"]):
+        refresh_user_credits(user)
+        st.query_params.clear()
+        st.success(f"Payment successful! {details['credits']} credits added.")
+        st.rerun()
+
+
+def render_auth_page() -> None:
+    st.title("Sign in to continue")
+    st.caption("One free screening per account. Credits are tied to your email — not your browser session.")
+
+    if not is_auth_configured():
+        st.error(
+            "Authentication is not configured. Set `SUPABASE_URL`, `SUPABASE_ANON_KEY`, and "
+            "`SUPABASE_SERVICE_ROLE_KEY` in `.env` or Streamlit secrets, then run "
+            "`scripts/supabase_schema.sql` in Supabase."
+        )
+        return
+
+    tab_sign_in, tab_sign_up = st.tabs(["Sign in", "Create account"])
+
+    def auth_form(mode: str) -> None:
+        with st.form(f"{mode}_form", clear_on_submit=False):
+            email = st.text_input("Email", placeholder="you@company.com")
+            password = st.text_input("Password", type="password")
+            st.markdown(f"**Security check:** {st.session_state.math_question}")
+            math_input = st.number_input(
+                "Answer",
+                min_value=0,
+                max_value=100,
+                step=1,
+                value=0,
+                label_visibility="collapsed",
+            )
+
+            turnstile_token = None
+            if is_turnstile_configured():
+                st.caption("Complete the CAPTCHA below:")
+                turnstile_token = turnstile_widget(TURNSTILE_SITE_KEY, key=f"turnstile_{mode}")
+
+            submitted = st.form_submit_button(
+                "Sign in" if mode == "sign_in" else "Create account",
+                use_container_width=True,
+            )
+
+        if not submitted:
+            return
+
+        ok, message = captcha_passed(
+            st.session_state.math_answer,
+            math_input,
+            turnstile_token,
+        )
+        if not ok:
+            st.error(message)
+            question, answer = new_math_challenge()
+            st.session_state.math_question = question
+            st.session_state.math_answer = answer
             st.rerun()
+
+        if mode == "sign_in":
+            user, error = sign_in(email, password, turnstile_token)
+        else:
+            user, error = sign_up(email, password, turnstile_token)
+
+        if error and not user:
+            st.error(error)
+            question, answer = new_math_challenge()
+            st.session_state.math_question = question
+            st.session_state.math_answer = answer
+            st.rerun()
+
+        if user:
+            st.session_state.user = user
+            refresh_user_credits(user)
+            st.success("Welcome back!" if mode == "sign_in" else "Account ready — you have 1 free credit.")
+            st.rerun()
+
+        if error:
+            st.info(error)
+
+    with tab_sign_in:
+        auth_form("sign_in")
+    with tab_sign_up:
+        auth_form("sign_up")
+
+
+def require_auth() -> AuthUser:
+    init_session_state()
+    user = st.session_state.user
+    if user:
+        return user
+    render_auth_page()
+    st.stop()
+
+
+def get_base_url() -> str:
+    return os.getenv("BASE_URL", "http://localhost:8501")
 
 
 def main():
-    init_session_state()
-    handle_stripe_callback()
+    user = require_auth()
+    handle_stripe_callback(user)
 
-    # Sidebar
     with st.sidebar:
         st.image("https://img.icons8.com/fluency/96/search.png", width=80)
-        st.title("🔍 Adverse News Classifier")
+        st.title("Adverse News Classifier")
         st.caption("Agentic AML Screening")
         st.divider()
+
+        st.caption(f"Signed in as **{user.email}**")
+        if st.button("Sign out", use_container_width=True):
+            st.session_state.user = None
+            st.session_state.report = None
+            st.rerun()
 
         st.metric("Credits", st.session_state.credits)
         if st.session_state.credits < 1:
             st.warning("No credits left. Purchase more below.")
-        
+
         st.divider()
         st.subheader("Data Sources")
         st.markdown("""
-        - 🌐 **Web** (DuckDuckGo)
-        - 📰 **News** (DuckDuckGo News)
-        - 📱 **Social Media** (Reddit, LinkedIn, X)
-        - 👔 **PEP List** (OpenSanctions)
-        - ⚠️ **Sanctions** (OpenSanctions)
+        - **Web** (DuckDuckGo)
+        - **News** (DuckDuckGo News)
+        - **Social Media** (Reddit, LinkedIn, X)
+        - **PEP List** (OpenSanctions)
+        - **Sanctions** (OpenSanctions)
         """)
-        
+
         st.divider()
-        use_ollama = st.checkbox("Use Ollama (local, free)", value=True, help="Uncheck to use OpenRouter API")
-        
+        use_ollama = st.checkbox(
+            "Use Ollama (local, free)",
+            value=False,
+            help="Only works when Streamlit runs on the same machine as Ollama. Use OpenRouter when hosted.",
+        )
+
         st.divider()
-        st.subheader("💳 Purchase Credits")
+        st.subheader("Purchase Credits")
         if is_stripe_configured():
             for pack_id, pack in CREDIT_PACKS.items():
                 if st.button(f"{pack_id.title()}: {pack['credits']} credits", key=f"buy_{pack_id}"):
-                    base_url = st.secrets.get("BASE_URL", "http://localhost:8501") if hasattr(st, "secrets") else "http://localhost:8501"
-                    url = create_checkout_session(pack_id, base_url, base_url)
+                    url = create_checkout_session(
+                        pack_id,
+                        get_base_url(),
+                        get_base_url(),
+                        customer_email=user.email,
+                        user_id=user.id,
+                    )
                     if url:
-                        st.link_button("Complete Purchase →", url)
+                        st.link_button("Complete Purchase", url)
+                    else:
+                        st.error("Could not start checkout. Configure Stripe price IDs for logged-in purchases.")
         else:
-            st.info("Set STRIPE_SECRET_KEY and STRIPE_PUBLISHABLE_KEY to enable payments.")
+            st.info("Set Stripe keys to enable payments.")
 
-    # Main content
     st.title("Adverse News Index")
-    st.markdown("Screen individuals or companies against adverse media, PEP lists, and sanctions. **No paid APIs** — uses DuckDuckGo, OpenSanctions bulk data, and local/OpenRouter LLM.")
+    st.markdown(
+        "Screen individuals or companies against adverse media, PEP lists, and sanctions. "
+        "**No paid search APIs** — uses DuckDuckGo, OpenSanctions bulk data, and OpenRouter/Ollama."
+    )
 
     col1, col2 = st.columns([2, 1])
     with col1:
@@ -163,8 +313,13 @@ def main():
         elif st.session_state.credits < 1:
             st.error("Insufficient credits. Please purchase more in the sidebar.")
         else:
-            st.session_state.credits -= 1
-            st.session_state.processing = True
+            ok, new_balance = deduct_credit(user.id)
+            if not ok:
+                st.session_state.credits = get_credits(user.id)
+                st.error("Insufficient credits. Please purchase more in the sidebar.")
+            else:
+                st.session_state.credits = new_balance
+                st.session_state.processing = True
 
     if st.session_state.processing:
         with st.spinner("Running agentic screening (web, news, social, PEP, sanctions)..."):
@@ -177,19 +332,16 @@ def main():
                 st.session_state.report = report
             except Exception as e:
                 st.error(f"Screening failed: {e}")
-                st.session_state.credits += 1  # Refund on error
+                st.session_state.credits = refund_credit(user.id)
             finally:
                 st.session_state.processing = False
         st.rerun()
 
-    # Display report
     report: AdverseNewsReport = st.session_state.report
     if report:
-        risk_class = f"risk-{report.risk_level.lower()}"
-        
         st.markdown("---")
-        st.subheader("📊 Adverse News Index")
-        
+        st.subheader("Adverse News Index")
+
         c1, c2, c3 = st.columns(3)
         with c1:
             st.metric("ANI Score", f"{report.ani_score:.2f}", f"Risk: {report.risk_level}")
@@ -197,7 +349,7 @@ def main():
             st.metric("Risk Level", report.risk_level, "")
         with c3:
             st.metric("Sources Checked", len(report.screening.results) + 2, "web+news+social+PEP+sanctions")
-        
+
         st.markdown(f"""
         <div class="ani-score-card">
             <h4>Justification</h4>
@@ -205,8 +357,7 @@ def main():
         </div>
         """, unsafe_allow_html=True)
 
-        # PEP / Sanction watchlist checks (OpenSanctions)
-        st.subheader("🛡️ Watchlist Screening")
+        st.subheader("Watchlist Screening")
         wl1, wl2 = st.columns(2)
 
         def _os_link(entity_id):
@@ -216,7 +367,7 @@ def main():
             pep = report.screening.pep_match
             if pep:
                 conf = pep.get("match_confidence")
-                st.warning("⚠️ **PEP Match** — Politically Exposed Person")
+                st.warning("**PEP Match** — Politically Exposed Person")
                 st.markdown(f"**Matched name:** {pep.get('matched_name', '—').title()}")
                 if conf is not None:
                     st.markdown(f"**Match confidence:** {conf:.0%}")
@@ -226,13 +377,13 @@ def main():
                 if link:
                     st.markdown(f"**OpenSanctions record:** [{pep.get('entity_id')}]({link})")
             else:
-                st.success("✅ **PEP:** No match found")
+                st.success("**PEP:** No match found")
 
         with wl2:
             sanc = report.screening.sanction_match
             if sanc:
                 conf = sanc.get("match_confidence")
-                st.error("🚫 **Sanction Match** — On sanction/watchlist")
+                st.error("**Sanction Match** — On sanction/watchlist")
                 st.markdown(f"**Matched name:** {sanc.get('matched_name', '—').title()}")
                 if conf is not None:
                     st.markdown(f"**Match confidence:** {conf:.0%}")
@@ -244,22 +395,20 @@ def main():
                 if link:
                     st.markdown(f"**OpenSanctions record:** [{sanc.get('entity_id')}]({link})")
             else:
-                st.success("✅ **Sanctions:** No match found")
+                st.success("**Sanctions:** No match found")
 
-        # Warn if the local watchlist data hasn't been downloaded
         from src.collectors import _load_opensanctions_data
         _peps, _sanctions = _load_opensanctions_data()
         if not _peps and not _sanctions:
             st.info(
-                "ℹ️ No local OpenSanctions data loaded — PEP/Sanction checks were skipped. "
+                "No local OpenSanctions data loaded — PEP/Sanction checks were skipped. "
                 "Run `python3 scripts/download_opensanctions.py` to enable them."
             )
         else:
             st.caption(f"Screened against {len(_peps):,} PEP and {len(_sanctions):,} sanction records (OpenSanctions).")
 
-        # Non-fatal source warnings (e.g. DuckDuckGo rate-limiting)
         if report.screening.errors:
-            with st.expander(f"⚠️ {len(report.screening.errors)} source warning(s)"):
+            with st.expander(f"{len(report.screening.errors)} source warning(s)"):
                 for err in report.screening.errors:
                     st.caption(err)
                 st.caption(
@@ -267,9 +416,8 @@ def main():
                     "queries. Other sources still ran; try again in a moment for full coverage."
                 )
 
-        # Results by source
         real_results = [r for r in report.screening.results if r.title]
-        st.subheader(f"📑 Retrieved Results ({len(real_results)})")
+        st.subheader(f"Retrieved Results ({len(real_results)})")
         if not real_results:
             st.info("No web/news/social results retrieved (sources may be rate-limited). PEP/sanction screening above is unaffected.")
         for r in real_results:

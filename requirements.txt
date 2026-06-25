@@ -7,4 +7,5 @@ openai>=1.0.0
 stripe>=7.0.0
 python-dotenv>=1.0.0
 pandas>=2.0.0
-httpx>=0.25.0
+httpx>=0.26,<0.29
+supabase>=2.31.0

@@ -7,7 +7,7 @@ from typing import Optional
 
 import stripe
 
-from .config import STRIPE_SECRET_KEY, STRIPE_PUBLISHABLE_KEY
+from .config import FREE_CREDITS, STRIPE_PUBLISHABLE_KEY, STRIPE_SECRET_KEY
 
 # Initialize Stripe
 if STRIPE_SECRET_KEY:
@@ -32,14 +32,12 @@ CREDIT_PACKS = {
     },
 }
 
-FREE_CREDITS = 3  # Free screenings for new users
-
-
 def create_checkout_session(
     pack_id: str,
     success_url: str,
     cancel_url: str,
     customer_email: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> Optional[str]:
     """
     Create Stripe Checkout session or return Payment Link URL.
@@ -49,11 +47,11 @@ def create_checkout_session(
     if not pack:
         return None
 
-    # Option 1: Use pre-created Payment Link (simplest)
-    if pack.get("payment_link"):
+    # Payment Links cannot attach user_id metadata — use Checkout for logged-in users.
+    if pack.get("payment_link") and not user_id:
         return pack["payment_link"]
 
-    # Option 2: Create Checkout session (requires price_id)
+    # Create Checkout session (requires price_id)
     if not STRIPE_SECRET_KEY or not pack.get("price_id"):
         return None
 
@@ -65,7 +63,11 @@ def create_checkout_session(
             success_url=success_url + "?session_id={CHECKOUT_SESSION_ID}",
             cancel_url=cancel_url,
             customer_email=customer_email,
-            metadata={"pack_id": pack_id, "credits": str(pack["credits"])},
+            metadata={
+                "pack_id": pack_id,
+                "credits": str(pack["credits"]),
+                **({"user_id": user_id} if user_id else {}),
+            },
         )
         return session.url
     except Exception:
@@ -84,17 +86,18 @@ def is_stripe_configured() -> bool:
     return has_api or has_links
 
 
-def get_credits_from_session(session_id: str) -> Optional[int]:
-    """
-    Retrieve credits from completed Stripe session.
-    In production, verify via webhook and store in DB.
-    """
+def get_paid_session_details(session_id: str) -> Optional[dict]:
+    """Return paid session metadata needed to grant credits to a user."""
     if not STRIPE_SECRET_KEY:
         return None
     try:
         session = stripe.checkout.Session.retrieve(session_id)
-        if session.payment_status == "paid":
-            return int(session.metadata.get("credits", 0))
+        if session.payment_status != "paid":
+            return None
+        credits = int(session.metadata.get("credits", 0))
+        user_id = session.metadata.get("user_id")
+        if credits <= 0 or not user_id:
+            return None
+        return {"credits": credits, "user_id": user_id}
     except Exception:
-        pass
-    return None
+        return None

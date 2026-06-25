@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+  </head>
+  <body style="margin: 0; padding: 0;">
+    <div id="turnstile-root"></div>
+    <script>
+      const Streamlit = {
+        setComponentReady() {
+          window.parent.postMessage({ type: "streamlit:componentReady", isReady: true }, "*");
+        },
+        setFrameHeight(height) {
+          window.parent.postMessage({ type: "streamlit:setFrameHeight", height }, "*");
+        },
+        setComponentValue(value) {
+          window.parent.postMessage(
+            { type: "streamlit:setComponentValue", value, dataType: "json" },
+            "*"
+          );
+        },
+        RENDER_EVENT: "streamlit:render",
+        events: {
+          addEventListener(type, callback) {
+            window.addEventListener("message", (event) => {
+              if (event.data.type === type) callback(event);
+            });
+          },
+        },
+      };
+
+      let rendered = false;
+
+      function renderWidget(siteKey) {
+        const root = document.getElementById("turnstile-root");
+        root.innerHTML = "";
+
+        if (!siteKey || siteKey === "disabled") {
+          Streamlit.setFrameHeight(0);
+          Streamlit.setComponentValue(null);
+          return;
+        }
+
+        if (typeof turnstile === "undefined") {
+          setTimeout(() => renderWidget(siteKey), 200);
+          return;
+        }
+
+        turnstile.render("#turnstile-root", {
+          sitekey: siteKey,
+          callback(token) {
+            Streamlit.setComponentValue(token);
+            Streamlit.setFrameHeight(78);
+          },
+          "expired-callback"() {
+            Streamlit.setComponentValue(null);
+          },
+          "error-callback"() {
+            Streamlit.setComponentValue(null);
+          },
+        });
+        Streamlit.setFrameHeight(78);
+        rendered = true;
+      }
+
+      function onRender(event) {
+        const siteKey = event.detail.args.siteKey;
+        if (!rendered) {
+          renderWidget(siteKey);
+        }
+      }
+
+      Streamlit.events.addEventListener(Streamlit.RENDER_EVENT, onRender);
+      Streamlit.setComponentReady();
+      Streamlit.setFrameHeight(78);
+    </script>
+  </body>
+</html>
