@@ -127,23 +127,49 @@ def refresh_user_credits(user: AuthUser) -> None:
 
 def handle_stripe_callback(user: AuthUser) -> None:
     session_id = st.query_params.get("session_id")
-    if not session_id or not is_stripe_configured():
+    if not session_id:
         return
 
-    details = get_paid_session_details(session_id)
+    # Keep session_id in state so it survives reruns even if URL is cleared
+    st.session_state["pending_session_id"] = session_id
+
+    if not is_stripe_configured():
+        st.warning("Stripe not configured — cannot verify payment automatically.")
+        st.query_params.clear()
+        return
+
+    details, error = get_paid_session_details(session_id)
+
     if not details:
+        st.error(f"Payment verification failed: {error}")
+        st.caption(f"Session ID: `{session_id}`")
+        st.query_params.clear()
         return
 
     if details["user_id"] != user.id:
-        st.error("Payment session does not match the signed-in account.")
+        st.error(
+            f"Payment was made under a different account (expected `{details['user_id'][:8]}…`). "
+            "Sign in with the account used at checkout."
+        )
         st.query_params.clear()
         return
 
-    if record_stripe_session(session_id, user.id, details["credits"]):
-        refresh_user_credits(user)
+    try:
+        applied = record_stripe_session(session_id, user.id, details["credits"])
+    except Exception as e:
+        st.error(f"Credits could not be saved to database: {e}. Session ID: `{session_id}`")
         st.query_params.clear()
-        st.success(f"Payment successful! {details['credits']} credits added.")
-        st.rerun()
+        return
+
+    refresh_user_credits(user)
+    st.query_params.clear()
+    st.session_state.pop("pending_session_id", None)
+
+    if applied:
+        st.success(f"Payment confirmed — {details['credits']} credits added!")
+    else:
+        st.info("Payment already processed. Your credits are up to date.")
+    st.rerun()
 
 
 def render_auth_page() -> None:
@@ -256,6 +282,9 @@ def main():
             st.rerun()
 
         st.metric("Credits", st.session_state.credits)
+        if st.button("Refresh credits", use_container_width=True):
+            refresh_user_credits(user)
+            st.rerun()
         if st.session_state.credits < 1:
             st.warning("No credits left. Purchase more below.")
 
@@ -275,6 +304,34 @@ def main():
             value=False,
             help="Only works when Streamlit runs on the same machine as Ollama. Use OpenRouter when hosted.",
         )
+
+        st.divider()
+        with st.expander("Already paid? Apply manually"):
+            manual_sid = st.text_input(
+                "Stripe session ID",
+                placeholder="cs_test_...",
+                key="manual_session_id",
+            )
+            if st.button("Apply credits", use_container_width=True):
+                if manual_sid.strip():
+                    details, error = get_paid_session_details(manual_sid.strip())
+                    if not details:
+                        st.error(f"Could not apply: {error}")
+                    elif details["user_id"] != user.id:
+                        st.error("Session belongs to a different account.")
+                    else:
+                        try:
+                            applied = record_stripe_session(manual_sid.strip(), user.id, details["credits"])
+                            refresh_user_credits(user)
+                            if applied:
+                                st.success(f"{details['credits']} credits applied!")
+                            else:
+                                st.info("Already applied. Credits refreshed.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(str(e))
+                else:
+                    st.warning("Paste your Stripe session ID above.")
 
         st.divider()
         st.subheader("Purchase Credits")

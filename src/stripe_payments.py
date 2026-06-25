@@ -86,18 +86,46 @@ def is_stripe_configured() -> bool:
     return has_api or has_links
 
 
-def get_paid_session_details(session_id: str) -> Optional[dict]:
-    """Return paid session metadata needed to grant credits to a user."""
+def get_paid_session_details(session_id: str) -> tuple[Optional[dict], str]:
+    """
+    Return (details_dict, error_message).
+    details_dict is None when payment cannot be applied.
+    error_message is empty string on success.
+    """
     if not STRIPE_SECRET_KEY:
-        return None
+        return None, "Stripe secret key not configured."
     try:
         session = stripe.checkout.Session.retrieve(session_id)
-        if session.payment_status != "paid":
-            return None
-        credits = int(session.metadata.get("credits", 0))
-        user_id = session.metadata.get("user_id")
-        if credits <= 0 or not user_id:
-            return None
-        return {"credits": credits, "user_id": user_id}
+    except Exception as e:
+        return None, f"Stripe API error: {e}"
+
+    status = session.payment_status
+    if status != "paid":
+        return None, f"Payment status is '{status}' (not paid yet)."
+
+    # StripeObject doesn't convert cleanly via dict() — read keys directly.
+    def _meta(key: str, default: str = "") -> str:
+        try:
+            return session.metadata[key] or default
+        except Exception:
+            return default
+
+    try:
+        credits = int(_meta("credits", "0"))
     except Exception:
-        return None
+        credits = 0
+    user_id = _meta("user_id") or None
+
+    if credits <= 0:
+        return None, (
+            "No credits found in session metadata. "
+            "This session was likely created before the latest app update. "
+            "Please make a new purchase — the old payment has already gone through in Stripe."
+        )
+    if not user_id:
+        return None, (
+            "No user_id in session metadata. "
+            "This session was created before login tracking was added. "
+            "Please make a new purchase — credits will attach automatically."
+        )
+    return {"credits": credits, "user_id": user_id}, ""

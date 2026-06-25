@@ -1,5 +1,6 @@
 """Streamlit wrapper for Cloudflare Turnstile."""
 import os
+from typing import Optional
 
 import streamlit.components.v1 as components
 
@@ -9,7 +10,7 @@ _component = components.declare_component(
 )
 
 
-def turnstile_widget(site_key: str, key: str | None = None) -> str | None:
+def turnstile_widget(site_key: str, key: Optional[str] = None) -> Optional[str]:
     """Render Turnstile and return the response token, or None until completed."""
     if not site_key:
         return None

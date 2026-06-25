@@ -8,4 +8,5 @@ stripe>=7.0.0
 python-dotenv>=1.0.0
 pandas>=2.0.0
 httpx>=0.26,<0.29
+websockets>=13.0
 supabase>=2.31.0
