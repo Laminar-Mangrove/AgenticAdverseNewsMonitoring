@@ -230,21 +230,24 @@ def render_auth_page() -> None:
         else:
             user, error = sign_up(email, password, turnstile_token)
 
-        if error and not user:
+        # "Account created. Check your email..." is not an error — show as success
+        email_pending = error and "confirm" in error.lower() and not user
+        if error and not user and not email_pending:
             st.error(error)
             question, answer = new_math_challenge()
             st.session_state.math_question = question
             st.session_state.math_answer = answer
-            st.rerun()
+            return
+
+        if email_pending:
+            st.success("Account created! Check your inbox and click the confirmation link, then come back and sign in.")
+            return
 
         if user:
             st.session_state.user = user
             refresh_user_credits(user)
             st.success("Welcome back!" if mode == "sign_in" else "Account ready — you have 1 free credit.")
             st.rerun()
-
-        if error:
-            st.info(error)
 
     with tab_sign_in:
         auth_form("sign_in")
@@ -304,34 +307,6 @@ def main():
             value=False,
             help="Only works when Streamlit runs on the same machine as Ollama. Use OpenRouter when hosted.",
         )
-
-        st.divider()
-        with st.expander("Already paid? Apply manually"):
-            manual_sid = st.text_input(
-                "Stripe session ID",
-                placeholder="cs_test_...",
-                key="manual_session_id",
-            )
-            if st.button("Apply credits", use_container_width=True):
-                if manual_sid.strip():
-                    details, error = get_paid_session_details(manual_sid.strip())
-                    if not details:
-                        st.error(f"Could not apply: {error}")
-                    elif details["user_id"] != user.id:
-                        st.error("Session belongs to a different account.")
-                    else:
-                        try:
-                            applied = record_stripe_session(manual_sid.strip(), user.id, details["credits"])
-                            refresh_user_credits(user)
-                            if applied:
-                                st.success(f"{details['credits']} credits applied!")
-                            else:
-                                st.info("Already applied. Credits refreshed.")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(str(e))
-                else:
-                    st.warning("Paste your Stripe session ID above.")
 
         st.divider()
         st.subheader("Purchase Credits")

@@ -14,5 +14,9 @@ venv/
 # OpenSanctions bulk data (download via scripts/download_opensanctions.py)
 data/opensanctions/*.csv
 
+# Internal documentation (not for public repo)
+Whitepapers/
+*.rtf
+
 # OS
 .DS_Store
