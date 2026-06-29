@@ -9,6 +9,7 @@ __pycache__/
 venv/
 
 # Jupyter
+*.ipynb
 .ipynb_checkpoints/
 
 # OpenSanctions bulk data (download via scripts/download_opensanctions.py)
@@ -16,6 +17,7 @@ data/opensanctions/*.csv
 
 # Internal documentation (not for public repo)
 Whitepapers/
+Notes/
 *.rtf
 
 # OS
