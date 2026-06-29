@@ -29,11 +29,21 @@ SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
 
+# OpenSanctions API (commercial use; get key at https://www.opensanctions.org/api/)
+# When set, the app uses the API instead of local CSV files.
+# Free 30-day trial available with a business email.
+OPENSANCTIONS_API_KEY = os.getenv("OPENSANCTIONS_API_KEY", "")
+OPENSANCTIONS_API_URL = "https://api.opensanctions.org"
+
 # Cloudflare Turnstile CAPTCHA (optional but recommended for production)
 TURNSTILE_SITE_KEY = os.getenv("TURNSTILE_SITE_KEY", "")
 TURNSTILE_SECRET_KEY = os.getenv("TURNSTILE_SECRET_KEY", "")
 
 FREE_CREDITS = 1
+
+
+def is_opensanctions_api_configured() -> bool:
+    return bool(OPENSANCTIONS_API_KEY)
 
 
 def is_supabase_configured() -> bool:

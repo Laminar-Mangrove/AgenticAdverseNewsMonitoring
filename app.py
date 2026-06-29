@@ -429,15 +429,20 @@ def main():
             else:
                 st.success("**Sanctions:** No match found")
 
+        from src.config import is_opensanctions_api_configured
         from src.collectors import _load_opensanctions_data
-        _peps, _sanctions = _load_opensanctions_data()
-        if not _peps and not _sanctions:
-            st.info(
-                "No local OpenSanctions data loaded — PEP/Sanction checks were skipped. "
-                "Run `python3 scripts/download_opensanctions.py` to enable them."
-            )
+        if is_opensanctions_api_configured():
+            st.caption("Watchlist screening via OpenSanctions API (live, always up-to-date).")
         else:
-            st.caption(f"Screened against {len(_peps):,} PEP and {len(_sanctions):,} sanction records (OpenSanctions).")
+            _peps, _sanctions = _load_opensanctions_data()
+            if not _peps and not _sanctions:
+                st.info(
+                    "No watchlist data available — PEP/Sanction checks were skipped. "
+                    "Set OPENSANCTIONS_API_KEY in secrets for hosted use, or run "
+                    "`python3 scripts/download_opensanctions.py` for local CSV."
+                )
+            else:
+                st.caption(f"Screened against {len(_peps):,} PEP and {len(_sanctions):,} sanction records (OpenSanctions local CSV).")
 
         if report.screening.errors:
             with st.expander(f"{len(report.screening.errors)} source warning(s)"):

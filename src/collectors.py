@@ -26,7 +26,10 @@ from .config import (
     MAX_WEB_RESULTS,
     MAX_NEWS_RESULTS,
     MAX_SOCIAL_RESULTS,
+    OPENSANCTIONS_API_KEY,
+    OPENSANCTIONS_API_URL,
     OPENSANCTIONS_DIR,
+    is_opensanctions_api_configured,
 )
 
 
@@ -338,20 +341,110 @@ def _find_watchlist_match(name: str, entities: list[dict], category: str) -> Opt
     return best if best_score >= MATCH_THRESHOLD else None
 
 
-def check_pep_list(name: str) -> Optional[dict]:
+def _opensanctions_api_match(name: str, entity_type: str = "person") -> tuple[Optional[dict], Optional[dict]]:
     """
-    Check if entity appears on PEP (Politically Exposed Persons) list.
-    Uses OpenSanctions bulk data - free for non-commercial use.
+    Query the OpenSanctions matching API and return (pep_match, sanction_match).
+    A single API call to the `default` dataset covers both PEP and sanctions.
+    Costs EUR 0.10 per successful call. Requires OPENSANCTIONS_API_KEY.
+
+    API docs: https://www.opensanctions.org/api/
     """
+    schema = "Person" if entity_type == "person" else "Organization"
+    payload = {
+        "queries": {
+            "q1": {
+                "schema": schema,
+                "properties": {"name": [name]},
+            }
+        }
+    }
+    headers = {
+        "Authorization": f"ApiKey {OPENSANCTIONS_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        with requests.Session() as s:
+            resp = s.post(
+                f"{OPENSANCTIONS_API_URL}/match/default",
+                json=payload,
+                headers=headers,
+                timeout=20,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as e:
+        raise RuntimeError(f"OpenSanctions API error: {e}") from e
+
+    results = data.get("responses", {}).get("q1", {}).get("results", [])
+
+    pep_match: Optional[dict] = None
+    sanction_match: Optional[dict] = None
+
+    for hit in results:
+        if not hit.get("match"):
+            continue
+
+        score = float(hit.get("score", 0))
+        topics = hit.get("properties", {}).get("topics", [])
+        datasets = hit.get("datasets", [])
+        entity_id = hit.get("id", "")
+        caption = hit.get("caption", name)
+
+        base = {
+            "matched_name": caption,
+            "match_confidence": round(score, 3),
+            "entity_id": entity_id,
+            "dataset": ", ".join(datasets),
+        }
+
+        is_pep = any("pep" in t.lower() for t in topics)
+        is_sanction = any(
+            t.lower() in ("sanction", "debarment", "wanted")
+            for t in topics
+        ) or any(
+            kw in d.lower() for d in datasets
+            for kw in ("sanction", "ofac", "eu_", "un_", "sdn")
+        )
+
+        if is_pep and pep_match is None:
+            pep_match = {**base, "category": "pep"}
+
+        if is_sanction and sanction_match is None:
+            sanction_match = {
+                **base,
+                "category": "sanction",
+                "sanctions": ", ".join(
+                    hit.get("properties", {}).get("program", [])
+                ),
+            }
+
+        if pep_match and sanction_match:
+            break
+
+    return pep_match, sanction_match
+
+
+def check_pep_list(name: str, entity_type: str = "person") -> Optional[dict]:
+    """
+    Check if entity appears on PEP list.
+    Uses OpenSanctions API when configured, otherwise local CSV bulk data.
+    """
+    if is_opensanctions_api_configured():
+        pep_match, _ = _opensanctions_api_match(name, entity_type)
+        return pep_match
     pep_entities, _ = _load_opensanctions_data()
     return _find_watchlist_match(name, pep_entities, "pep")
 
 
-def check_sanction_list(name: str) -> Optional[dict]:
+def check_sanction_list(name: str, entity_type: str = "person") -> Optional[dict]:
     """
-    Check if entity appears on sanction/watchlist.
-    Uses OpenSanctions bulk data.
+    Check if entity appears on a sanctions/watchlist.
+    Uses OpenSanctions API when configured, otherwise local CSV bulk data.
     """
+    if is_opensanctions_api_configured():
+        _, sanction_match = _opensanctions_api_match(name, entity_type)
+        return sanction_match
     _, sanction_entities = _load_opensanctions_data()
     return _find_watchlist_match(name, sanction_entities, "sanction")
 
@@ -359,7 +452,8 @@ def check_sanction_list(name: str) -> Optional[dict]:
 def run_full_screening(entity_name: str, entity_type: str = "person") -> ScreeningResult:
     """
     Run full adverse media screening across all sources.
-    All free - no paid APIs.
+    Watchlist checks use the OpenSanctions API when OPENSANCTIONS_API_KEY is set,
+    falling back to local CSV files otherwise.
     """
     result = ScreeningResult(entity_name=entity_name, entity_type=entity_type)
 
@@ -379,10 +473,17 @@ def run_full_screening(entity_name: str, entity_type: str = "person") -> Screeni
         if i < len(searches) - 1:
             time.sleep(DDG_INTER_CALL_DELAY)
 
-    # 4. PEP list
-    result.pep_match = check_pep_list(entity_name)
-
-    # 5. Sanction list
-    result.sanction_match = check_sanction_list(entity_name)
+    # 4 & 5. PEP + sanctions — single API call when key configured, two CSV
+    # lookups otherwise. Errors are non-fatal: screening proceeds without matches.
+    if is_opensanctions_api_configured():
+        try:
+            result.pep_match, result.sanction_match = _opensanctions_api_match(
+                entity_name, entity_type
+            )
+        except Exception as e:
+            result.errors.append(f"OpenSanctions API unavailable ({e}). Watchlist checks skipped.")
+    else:
+        result.pep_match = check_pep_list(entity_name, entity_type)
+        result.sanction_match = check_sanction_list(entity_name, entity_type)
     
     return result
