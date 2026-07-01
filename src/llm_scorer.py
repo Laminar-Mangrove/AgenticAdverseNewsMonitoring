@@ -94,6 +94,33 @@ def _call_openrouter(prompt: str, system_prompt: str) -> str:
         return data["choices"][0]["message"]["content"]
 
 
+def call_llm(prompt: str, system_prompt: str, use_ollama: bool = True) -> str:
+    """
+    Public dispatcher used by the agentic graph. Routes to Ollama (local, free)
+    or OpenRouter (API). Raises on failure so callers can decide how to degrade.
+    """
+    if use_ollama:
+        return _call_ollama(prompt, system_prompt)
+    return _call_openrouter(prompt, system_prompt)
+
+
+def extract_json(response: str) -> dict:
+    """
+    Best-effort extraction of a JSON object from an LLM response, tolerating
+    markdown code fences and surrounding prose. Raises ValueError if none found.
+    """
+    if not response:
+        raise ValueError("empty response")
+    # Try the largest balanced {...} block first.
+    candidates = re.findall(r"\{.*\}", response, re.DOTALL)
+    for cand in sorted(candidates, key=len, reverse=True):
+        try:
+            return json.loads(cand)
+        except json.JSONDecodeError:
+            continue
+    return json.loads(response)  # last resort, raises on failure
+
+
 SYSTEM_PROMPT = """You are an expert AML (Anti-Money Laundering) compliance analyst specializing in adverse media screening.
 Your task is to analyze information about an entity (person or company) and produce an Adverse News Index (ANI) score.
 

@@ -20,5 +20,8 @@ Whitepapers/
 Notes/
 *.rtf
 
+# Local-only ops dashboard (reads secret keys; never deploy)
+cost_dashboard.py
+
 # OS
 .DS_Store

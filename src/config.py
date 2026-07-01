@@ -19,6 +19,28 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
 
+# Local embedding model for dense RAG retrieval (Ollama only; pull with
+# `ollama pull nomic-embed-text`). Ignored when running TF-IDF retrieval.
+OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
+
+# --- Agentic RAG pipeline (LangGraph) tunables -------------------------------
+# Enable the LangGraph agentic+RAG pipeline by default (falls back to the simple
+# pipeline automatically if langgraph isn't installed).
+USE_AGENTIC_DEFAULT = os.getenv("USE_AGENTIC_DEFAULT", "true").lower() == "true"
+# How many source URLs to fetch full text for, per search pass.
+RAG_MAX_DOCS = int(os.getenv("RAG_MAX_DOCS", "6"))
+# Per-document fetch timeout (seconds).
+RAG_FETCH_TIMEOUT = float(os.getenv("RAG_FETCH_TIMEOUT", "8"))
+# Chunking: window size and overlap, in words.
+RAG_CHUNK_WORDS = int(os.getenv("RAG_CHUNK_WORDS", "180"))
+RAG_CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "40"))
+# How many retrieved passages to feed the scorer.
+RAG_TOP_K = int(os.getenv("RAG_TOP_K", "8"))
+# Max agent reasoning iterations (each extra loop = 1 refined search + LLM call).
+# Default 1: dig one level deeper on a real lead, then finalize. The decide node
+# already fast-finalizes clean entities (no adverse signal) without any loop.
+AGENT_MAX_ITERATIONS = int(os.getenv("AGENT_MAX_ITERATIONS", "1"))
+
 # Stripe
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
 STRIPE_PUBLISHABLE_KEY = os.getenv("STRIPE_PUBLISHABLE_KEY", "")

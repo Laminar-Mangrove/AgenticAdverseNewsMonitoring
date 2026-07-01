@@ -307,6 +307,17 @@ def main():
             value=False,
             help="Only works when Streamlit runs on the same machine as Ollama. Use OpenRouter when hosted.",
         )
+        from src.agent import agentic_available
+        use_agentic = st.checkbox(
+            "Agentic RAG pipeline (LangGraph)",
+            value=agentic_available(),
+            disabled=not agentic_available(),
+            help=(
+                "Fetches full article text, retrieves the most risk-relevant "
+                "passages, and lets the LLM decide whether to search deeper. "
+                "Falls back to the simple snippet pipeline if unavailable."
+            ),
+        )
 
         st.divider()
         st.subheader("Purchase Credits")
@@ -360,6 +371,7 @@ def main():
                     entity_name.strip(),
                     entity_type,
                     use_ollama=use_ollama,
+                    use_agentic=use_agentic,
                 )
                 st.session_state.report = report
             except Exception as e:
@@ -388,6 +400,39 @@ def main():
             <p>{report.justification}</p>
         </div>
         """, unsafe_allow_html=True)
+
+        details = report.ani_details or {}
+        if details.get("pipeline") == "agentic_rag":
+            id_score = details.get("identity_score")
+            neg_score = details.get("negativity_score")
+            backend = details.get("retriever_backend", "none")
+            iters = details.get("iterations", 0)
+            meta = []
+            if id_score is not None:
+                meta.append(f"Identity confidence: **{id_score:.0%}**")
+            if neg_score is not None:
+                meta.append(f"Negativity: **{neg_score:.0%}**")
+            meta.append(f"Retrieval: **{backend}**")
+            meta.append(f"Agent loops: **{iters}**")
+            st.caption("Agentic RAG pipeline · " + " · ".join(meta))
+
+            trace = details.get("agent_trace", [])
+            if trace:
+                with st.expander("Agent reasoning trace"):
+                    for i, step in enumerate(trace, 1):
+                        st.markdown(f"{i}. {step}")
+                    if details.get("queries_tried"):
+                        st.caption("Queries: " + " | ".join(details["queries_tried"]))
+
+            passages = details.get("retrieved_passages", [])
+            if passages:
+                with st.expander(f"Retrieved evidence ({len(passages)} passages)"):
+                    for i, p in enumerate(passages, 1):
+                        st.markdown(
+                            f"**[{i}]** _{p.get('source','')}_ · relevance {p.get('score',0):.2f} · "
+                            f"[source]({p.get('url','')})"
+                        )
+                        st.caption(p.get("text", "")[:600] + "…")
 
         st.subheader("Watchlist Screening")
         wl1, wl2 = st.columns(2)

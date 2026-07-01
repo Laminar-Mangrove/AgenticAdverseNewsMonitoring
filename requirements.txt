@@ -10,3 +10,6 @@ pandas>=2.0.0
 httpx>=0.26,<0.29
 websockets>=13.0
 supabase>=2.31.0
+# Agentic RAG pipeline
+langgraph>=0.2.0
+scikit-learn>=1.3.0
