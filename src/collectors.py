@@ -15,7 +15,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import requests
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 
 # Retry/backoff tuning for DuckDuckGo (which rate-limits automated queries).
 DDG_RETRIES = 3
@@ -73,9 +73,14 @@ def _ddgs_call(method: str, query: str, max_results: int) -> list[dict]:
                 return list(fn(query, max_results=max_results))
         except Exception as e:  # noqa: BLE001 - we re-raise after retries
             last_err = e
-            if attempt < DDG_RETRIES - 1 and _is_ratelimit(e):
-                # backoff with jitter
-                time.sleep(DDG_BACKOFF_BASE * (2 ** attempt) + random.uniform(0, 1))
+            if attempt < DDG_RETRIES - 1:
+                # Rate limits need a real backoff; other transient errors (e.g.
+                # ddgs randomly selecting a TLS context the local OpenSSL build
+                # rejects) just need a fresh attempt with a re-randomised client.
+                if _is_ratelimit(e):
+                    time.sleep(DDG_BACKOFF_BASE * (2 ** attempt) + random.uniform(0, 1))
+                else:
+                    time.sleep(0.5)
                 continue
             break
     if last_err:
